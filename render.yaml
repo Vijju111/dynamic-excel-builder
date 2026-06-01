@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: dynamic-excel-builder-api
+    env: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+
+  - type: web
+    name: dynamic-excel-builder-frontend
+    env: static
+    plan: free
+    buildCommand: cd frontend && npm install && VITE_API_BASE=https://dynamic-excel-builder-api.onrender.com npm run build
+    staticPublishPath: frontend/dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

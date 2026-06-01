@@ -1,0 +1,641 @@
+/* ==========================================================================
+   Dynamic Excel Builder - Professional UI Styles
+   File: frontend/src/styles.css
+   Purpose: UI-only styling. No functionality changes.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. Theme Variables
+   -------------------------------------------------------------------------- */
+
+:root {
+  --bg-main: #f4f7fb;
+  --bg-soft: #f8fbff;
+  --bg-card: rgba(255, 255, 255, 0.96);
+
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
+  --primary-soft: #eff6ff;
+
+  --success: #0f766e;
+  --success-soft: #dcfce7;
+
+  --danger: #dc2626;
+  --danger-soft: #fee2e2;
+
+  --warning: #92400e;
+  --warning-soft: #fef3c7;
+
+  --text-main: #0f172a;
+  --text-body: #334155;
+  --text-muted: #64748b;
+  --text-light: #94a3b8;
+
+  --border: #dbe5f1;
+  --border-strong: #cbd5e1;
+
+  --shadow-sm: 0 6px 16px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 14px 34px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 22px 60px rgba(15, 23, 42, 0.12);
+
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 26px;
+
+  --header-height: 72px;
+}
+
+/* --------------------------------------------------------------------------
+   2. Global Reset
+   -------------------------------------------------------------------------- */
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  background: var(--bg-main);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text-body);
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(37, 99, 235, 0.14), transparent 34rem),
+    radial-gradient(circle at bottom right, rgba(15, 118, 110, 0.08), transparent 30rem),
+    linear-gradient(135deg, #f8fbff 0%, #eef4fb 48%, #f8fafc 100%);
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button,
+select,
+input {
+  outline: none;
+}
+
+button {
+  user-select: none;
+}
+
+svg {
+  flex-shrink: 0;
+}
+
+/* --------------------------------------------------------------------------
+   3. Main App Layout
+   -------------------------------------------------------------------------- */
+
+.app {
+  width: 100%;
+  max-width: 1640px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+
+  margin-bottom: 20px;
+  padding: 22px 24px;
+
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(219, 229, 241, 0.9);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(12px);
+}
+
+.topbar h1,
+h1 {
+  margin: 0;
+  color: var(--text-main);
+  font-size: clamp(26px, 3vw, 38px);
+  font-weight: 850;
+  letter-spacing: -0.04em;
+}
+
+.topbar p,
+p {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.top-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.saved {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+
+  padding: 8px 12px;
+  border-radius: 999px;
+
+  color: #047857;
+  background: #ecfdf5;
+  border: 1px solid #bbf7d0;
+
+  font-size: 13px;
+  font-weight: 800;
+}
+
+/* --------------------------------------------------------------------------
+   4. Step Navigation
+   -------------------------------------------------------------------------- */
+
+.steps {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.steps span {
+  display: inline-flex;
+  align-items: center;
+
+  padding: 11px 18px;
+  border-radius: 999px;
+
+  color: #475569;
+  background: #e2eaf5;
+  border: 1px solid #d5e0ef;
+
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.steps span.active {
+  color: #ffffff;
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+  border-color: transparent;
+  box-shadow: 0 12px 26px rgba(37, 99, 235, 0.22);
+}
+
+/* --------------------------------------------------------------------------
+   5. Cards / Panels
+   -------------------------------------------------------------------------- */
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: 20px;
+}
+
+.card h2,
+h2 {
+  margin: 0 0 12px;
+  color: #10233f;
+  font-size: 21px;
+  font-weight: 850;
+  letter-spacing: -0.025em;
+}
+
+.card h3,
+h3 {
+  margin: 18px 0 8px;
+  color: #172554;
+  font-size: 15px;
+  font-weight: 850;
+}
+
+/* --------------------------------------------------------------------------
+   6. Buttons
+   -------------------------------------------------------------------------- */
+
+button,
+.import-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+
+  min-height: 40px;
+  padding: 9px 13px;
+
+  color: #ffffff;
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+  border: 0;
+  border-radius: 12px;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.18);
+
+  font-weight: 800;
+  font-size: 14px;
+  line-height: 1;
+
+  cursor: pointer;
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.12s ease,
+    filter 0.12s ease;
+}
+
+button:hover,
+.import-button:hover {
+  filter: brightness(0.97);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.24);
+}
+
+button:active,
+.import-button:active {
+  transform: translateY(0);
+  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.18);
+}
+
+button.ghost {
+  color: #1e3a8a;
+  background: #eef4ff;
+  border: 1px solid #dbe7ff;
+  box-shadow: none;
+}
+
+button.primary {
+  margin-top: 18px;
+  background: linear-gradient(135deg, #0f766e, #0d9488);
+  box-shadow: 0 10px 22px rgba(15, 118, 110, 0.2);
+}
+
+button.pill {
+  min-height: 34px;
+  margin: 5px;
+  padding: 7px 11px;
+
+  color: #0e7490;
+  background: #ecfeff;
+  border: 1px solid #bae6fd;
+  box-shadow: none;
+
+  font-size: 13px;
+}
+
+/* --------------------------------------------------------------------------
+   7. Form Elements
+   -------------------------------------------------------------------------- */
+
+input,
+select {
+  min-width: 160px;
+  min-height: 40px;
+  padding: 9px 12px;
+
+  color: var(--text-body);
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+input:focus,
+select:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+
+  color: #475569;
+  font-weight: 750;
+}
+
+.inline-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+
+  margin: 0;
+  padding: 6px 8px;
+
+  background: #f8fbff;
+  border: 1px solid #dbe7ff;
+  border-radius: 14px;
+}
+
+/* --------------------------------------------------------------------------
+   8. Alerts / Status Messages
+   -------------------------------------------------------------------------- */
+
+.alert {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+
+  margin-bottom: 14px;
+  padding: 13px 15px;
+
+  border-radius: 16px;
+  font-weight: 800;
+}
+
+.alert.error {
+  color: #991b1b;
+  background: var(--danger-soft);
+  border: 1px solid #fecaca;
+}
+
+.alert.ok {
+  color: #166534;
+  background: var(--success-soft);
+  border: 1px solid #bbf7d0;
+}
+
+.alert.busy {
+  color: #1e40af;
+  background: #dbeafe;
+  border: 1px solid #bfdbfe;
+}
+
+.warn {
+  margin: 12px 0;
+  padding: 11px 12px;
+
+  color: var(--warning);
+  background: var(--warning-soft);
+  border: 1px solid #fde68a;
+  border-radius: 14px;
+
+  font-weight: 750;
+}
+
+.statusbar {
+  padding: 12px 15px;
+
+  color: #1e3a8a;
+  background: var(--primary-soft);
+  border: 1px solid #dbeafe;
+  border-radius: 15px;
+
+  font-weight: 700;
+}
+
+/* --------------------------------------------------------------------------
+   9. Upload Screen
+   -------------------------------------------------------------------------- */
+
+.upload-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 14px;
+
+  max-width: 760px;
+  min-height: 400px;
+  margin: 42px auto;
+}
+
+.upload-card svg {
+  color: var(--primary);
+}
+
+.upload-card input[type="file"] {
+  width: 100%;
+  max-width: 440px;
+  padding: 12px;
+
+  background: #ffffff;
+  border: 1px dashed #94a3b8;
+}
+
+/* --------------------------------------------------------------------------
+   10. Configure Screen
+   -------------------------------------------------------------------------- */
+
+.grid-layout {
+  display: grid;
+  grid-template-columns: 380px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.wide {
+  min-width: 0;
+}
+
+.column-list {
+  display: grid;
+  gap: 9px;
+  margin: 12px 0 16px;
+}
+
+.col-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(150px, 0.7fr) auto auto auto;
+  align-items: center;
+  gap: 8px;
+
+  padding: 9px;
+
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+}
+
+.col-row button {
+  min-height: 34px;
+  padding: 7px 9px;
+
+  color: #334155;
+  background: #e2e8f0;
+  box-shadow: none;
+}
+
+.source {
+  overflow: hidden;
+
+  color: var(--text-muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+details {
+  margin: 14px 0;
+  padding: 12px;
+
+  background: #fbfdff;
+  border: 1px dashed #cbd5e1;
+  border-radius: 14px;
+}
+
+summary {
+  color: #334155;
+  cursor: pointer;
+  font-weight: 850;
+}
+
+/* --------------------------------------------------------------------------
+   11. Workbench / Live Sheet Toolbar
+   -------------------------------------------------------------------------- */
+
+.workbench {
+  display: grid;
+  gap: 12px;
+}
+
+.toolbar {
+  position: sticky;
+  top: 10px;
+  z-index: 20;
+
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+
+  padding: 14px;
+}
+
+.toolbar button {
+  min-height: 38px;
+  padding: 8px 11px;
+  font-size: 13px;
+}
+
+.toolbar input {
+  min-width: 190px;
+}
+
+/* --------------------------------------------------------------------------
+   12. Handsontable Grid Styling
+   -------------------------------------------------------------------------- */
+
+.hot-wrap {
+  overflow: hidden;
+
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
+  border-radius: 18px;
+  box-shadow: var(--shadow-lg);
+}
+
+.handsontable {
+  font-size: 13px;
+}
+
+.handsontable td {
+  color: #1f2937;
+  font-size: 13px;
+  vertical-align: middle;
+}
+
+.handsontable th,
+.ht_clone_top th {
+  color: #ffffff !important;
+  background: #0f2742 !important;
+  border-color: #1e3a5f !important;
+
+  font-weight: 850;
+}
+
+.handsontable .current,
+.handsontable .area {
+  box-shadow: inset 0 0 0 2px var(--primary) !important;
+}
+
+.ht_master .not-found-row {
+  background: #fee2e2 !important;
+}
+
+.ht_master .matched-row {
+  background: #f0fdf4 !important;
+}
+
+/* --------------------------------------------------------------------------
+   13. Helper Text
+   -------------------------------------------------------------------------- */
+
+.mini {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* --------------------------------------------------------------------------
+   14. Responsive Design
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 1100px) {
+  .grid-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .toolbar {
+    position: static;
+  }
+}
+
+@media (max-width: 760px) {
+  .app {
+    padding: 14px;
+  }
+
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 18px;
+  }
+
+  .top-actions {
+    justify-content: flex-start;
+  }
+
+  .steps span {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .col-row {
+    grid-template-columns: 1fr;
+  }
+
+  input,
+  select,
+  .toolbar input {
+    width: 100%;
+    min-width: 0;
+  }
+
+  button,
+  .import-button {
+    width: 100%;
+  }
+
+  .inline-label {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
