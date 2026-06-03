@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HotTable } from '@handsontable/react';
+import Handsontable from 'handsontable';
 import { registerAllModules } from 'handsontable/registry';
 import { FileSpreadsheet, Download, Plus, Trash2, RefreshCw, Upload, AlertTriangle } from 'lucide-react';
 import { parseExcel, importWorkingSheet, downloadExport } from './api.js';
@@ -11,6 +12,40 @@ const EMPTY_ROWS = 25;
 const normalize = (v) => String(v ?? '').trim();
 const lookupKey = (v) => normalize(v).toLocaleLowerCase();
 const blankRow = (columns) => Object.fromEntries(columns.map((c) => [c.id, '']));
+
+function cleanExcelDisplayValue(value) {
+  if (value === null || value === undefined) return '';
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const yyyy = value.getFullYear();
+    const mm = String(value.getMonth() + 1).padStart(2, '0');
+    const dd = String(value.getDate()).padStart(2, '0');
+    const hasTime = value.getHours() || value.getMinutes() || value.getSeconds();
+    return hasTime
+      ? `${yyyy}-${mm}-${dd} ${String(value.getHours()).padStart(2, '0')}:${String(value.getMinutes()).padStart(2, '0')}:${String(value.getSeconds()).padStart(2, '0')}`
+      : `${yyyy}-${mm}-${dd}`;
+  }
+
+  if (typeof value === 'string') {
+    // CRITICAL: return normal Excel text EXACTLY. Do not trim. Do not replace T.
+    // Only real ISO datetime strings are converted.
+    const exactText = value;
+
+    const midnightIso = exactText.match(/^(\d{4}-\d{2}-\d{2})T00:00:00(?:\.000)?(?:Z)?$/);
+    if (midnightIso) return midnightIso[1];
+
+    const isoDateTime = exactText.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.000)?(?:Z)?$/);
+    if (isoDateTime) return `${isoDateTime[1]} ${isoDateTime[2]}`;
+
+    return exactText;
+  }
+
+  return value;
+}
+
+function cleanRecord(record) {
+  return Object.fromEntries(Object.entries(record || {}).map(([k, v]) => [k, cleanExcelDisplayValue(v)]));
+}
 
 function makeColumnId(name, existing = new Set()) {
   let base = normalize(name).toLowerCase().replace(/\W+/gu, '_').replace(/^_+|_+$/g, '') || 'column';
@@ -69,12 +104,20 @@ function App() {
   const [rowStatus, setRowStatus] = useState({});
   const [filename, setFilename] = useState('Generated_Sheet');
   const [savedAt, setSavedAt] = useState(null);
+  const [undoStack, setUndoStack] = useState([]);
+  const [redoStack, setRedoStack] = useState([]);
+  const [cellStyles, setCellStyles] = useState({});
+  const [showManual, setShowManual] = useState(false);
+  const [filterColumnId, setFilterColumnId] = useState('');
+  const [filterText, setFilterText] = useState('');
+  const undoRef = useRef([]);
+  const redoRef = useRef([]);
 
   useEffect(() => {
     loadSession().then((session) => {
       if (session && confirm('A previous local session was found. Restore it?')) {
         setStep(session.step || 1);
-        setMaster(session.master || null);
+        setMaster(session.master ? { ...session.master, rows: (session.master.rows || []).map(cleanRecord) } : null);
         setHeaderRow(session.headerRow || 0);
         setSelected(session.selected || []);
         setCustomColumns(session.customColumns || []);
@@ -86,6 +129,7 @@ function App() {
         setCellMeta(session.cellMeta || {});
         setRowStatus(session.rowStatus || {});
         setFilename(session.filename || 'Generated_Sheet');
+        setCellStyles(session.cellStyles || {});
         setSavedAt(session.savedAt || null);
       }
     }).catch(console.error);
@@ -104,12 +148,66 @@ function App() {
 
   useEffect(() => {
     if (!master && !rows.length) return;
-    const state = { step, master, headerRow, selected, customColumns, lookupColumn, duplicateMode, overwriteMode, workingColumns, rows, cellMeta, rowStatus, filename };
+    const state = { step, master, headerRow, selected, customColumns, lookupColumn, duplicateMode, overwriteMode, workingColumns, rows, cellMeta, rowStatus, filename, cellStyles };
     const t = setTimeout(() => {
       saveSession(state).then(() => setSavedAt(new Date().toLocaleString())).catch(console.error);
     }, 500);
     return () => clearTimeout(t);
-  }, [step, master, headerRow, selected, customColumns, lookupColumn, duplicateMode, overwriteMode, workingColumns, rows, cellMeta, rowStatus, filename]);
+  }, [step, master, headerRow, selected, customColumns, lookupColumn, duplicateMode, overwriteMode, workingColumns, rows, cellMeta, rowStatus, filename, cellStyles]);
+
+  function snapshotState() {
+    return {
+      rows: JSON.parse(JSON.stringify(rows)),
+      workingColumns: JSON.parse(JSON.stringify(workingColumns)),
+      cellMeta: JSON.parse(JSON.stringify(cellMeta)),
+      rowStatus: JSON.parse(JSON.stringify(rowStatus)),
+      cellStyles: JSON.parse(JSON.stringify(cellStyles)),
+    };
+  }
+
+  function restoreSnapshot(snapshot) {
+    if (!snapshot) return;
+    setRows(snapshot.rows || []);
+    setWorkingColumns(snapshot.workingColumns || []);
+    setCellMeta(snapshot.cellMeta || {});
+    setRowStatus(snapshot.rowStatus || {});
+    setCellStyles(snapshot.cellStyles || {});
+  }
+
+  function pushUndo(customSnapshot = null) {
+    const snap = customSnapshot || snapshotState();
+    const nextUndo = [...undoRef.current, snap].slice(-5);
+    undoRef.current = nextUndo;
+    redoRef.current = [];
+    setUndoStack(nextUndo);
+    setRedoStack([]);
+  }
+
+  function undoGrid() {
+    const last = undoRef.current[undoRef.current.length - 1];
+    if (!last) return;
+    const current = snapshotState();
+    const nextUndo = undoRef.current.slice(0, -1);
+    const nextRedo = [...redoRef.current, current].slice(-5);
+    undoRef.current = nextUndo;
+    redoRef.current = nextRedo;
+    setUndoStack(nextUndo);
+    setRedoStack(nextRedo);
+    restoreSnapshot(last);
+  }
+
+  function redoGrid() {
+    const last = redoRef.current[redoRef.current.length - 1];
+    if (!last) return;
+    const current = snapshotState();
+    const nextRedo = redoRef.current.slice(0, -1);
+    const nextUndo = [...undoRef.current, current].slice(-5);
+    redoRef.current = nextRedo;
+    undoRef.current = nextUndo;
+    setRedoStack(nextRedo);
+    setUndoStack(nextUndo);
+    restoreSnapshot(last);
+  }
 
   const duplicateLookupCount = useMemo(() => {
     if (!master || !lookupColumn) return 0;
@@ -139,7 +237,8 @@ function App() {
     if (!file) return;
     setBusy(true); setError(''); setNotice('');
     try {
-      const data = await parseExcel(file, headerRow);
+      const dataRaw = await parseExcel(file, headerRow);
+      const data = { ...dataRaw, rows: (dataRaw.rows || []).map(cleanRecord) };
       const existing = new Set();
       setMaster(data);
       const cols = data.columns.map((c) => ({ id: makeColumnId(c.displayName, existing), displayName: c.displayName, sourceColumn: c.originalName, isCustom: false }));
@@ -256,7 +355,7 @@ function App() {
         setRowStatus((s) => ({ ...s, [rowIndex]: 'not_found' }));
         return next;
       }
-      row[lookupWorkingCol.id] = match[lookupColumn] ?? key;
+      row[lookupWorkingCol.id] = cleanExcelDisplayValue(match[lookupColumn] ?? key);
       for (const col of workingColumns) {
         if (col.isCustom || !col.sourceColumn || col.id === lookupWorkingCol.id) continue;
         const metaKey = `${rowIndex}:${col.id}`;
@@ -264,7 +363,7 @@ function App() {
         if (!force && manual && overwriteMode === 'protect') continue;
         if (!force && manual && overwriteMode === 'confirm' && !confirm(`Overwrite manually edited value in ${col.displayName}?`)) continue;
         if (!force && manual && overwriteMode === 'refresh') continue;
-        row[col.id] = match[col.sourceColumn] ?? '';
+        row[col.id] = cleanExcelDisplayValue(match[col.sourceColumn] ?? '');
       }
       next[rowIndex] = row;
       setRowStatus((s) => ({ ...s, [rowIndex]: 'matched' }));
@@ -292,6 +391,11 @@ function App() {
     const hot = hotRef.current?.hotInstance;
     if (!hot) return;
     const updated = hot.getSourceData().map((r) => ({ ...blankRow(workingColumns), ...r }));
+    const beforeRows = updated.map((r) => ({ ...r }));
+    for (const [r, prop, oldVal] of changes) {
+      if (beforeRows[r]) beforeRows[r][prop] = oldVal ?? '';
+    }
+    pushUndo({ ...snapshotState(), rows: beforeRows });
     setRows(updated);
     const lookupProp = lookupWorkingCol?.id;
     const newMeta = {};
@@ -306,6 +410,7 @@ function App() {
   }
 
   function addRows(count = 10) {
+    pushUndo();
     setRows((prev) => [...prev, ...createInitialRows(workingColumns, count)]);
   }
 
@@ -350,6 +455,7 @@ function App() {
         if (startCol + c === lookupColIndex) lookupRows.push([startRow + r, matrix[r][c]]);
       }
     }
+    pushUndo();
     if (addedColumns.length) {
       setWorkingColumns(nextColumns);
       setCustomColumns((prev) => [...prev, ...addedColumns]);
@@ -368,9 +474,58 @@ function App() {
     }
   }
 
+  function forEachSelectedCell(callback) {
+    const range = selectedRange();
+    if (!range) return false;
+    for (let r = range.r1; r <= range.r2; r++) {
+      for (let c = range.c1; c <= range.c2; c++) {
+        const col = workingColumns[c];
+        if (col) callback(r, col.id, c);
+      }
+    }
+    return true;
+  }
+
+  function applyCellStyle(stylePatch) {
+    const range = selectedRange();
+    if (!range) return alert('Please select cell(s) first.');
+    pushUndo();
+    setCellStyles((prev) => {
+      const next = { ...prev };
+      forEachSelectedCell((r, colId) => {
+        const key = `${r}:${colId}`;
+        next[key] = { ...(next[key] || {}), ...stylePatch };
+      });
+      return next;
+    });
+    setTimeout(() => hotRef.current?.hotInstance?.render(), 0);
+  }
+
+  function toggleCellStyle(prop, onValue, offValue = '') {
+    const range = selectedRange();
+    if (!range) return alert('Please select cell(s) first.');
+    const firstCol = workingColumns[range.c1];
+    const firstKey = `${range.r1}:${firstCol?.id}`;
+    const currentlyOn = cellStyles[firstKey]?.[prop] === onValue;
+    applyCellStyle({ [prop]: currentlyOn ? offValue : onValue });
+  }
+
+  function clearSelectedFormatting() {
+    const range = selectedRange();
+    if (!range) return alert('Please select cell(s) first.');
+    pushUndo();
+    setCellStyles((prev) => {
+      const next = { ...prev };
+      forEachSelectedCell((r, colId) => delete next[`${r}:${colId}`]);
+      return next;
+    });
+    setTimeout(() => hotRef.current?.hotInstance?.render(), 0);
+  }
+
   function deleteSelectedRows() {
     const range = selectedRange();
     if (!range) return alert('Please select row(s) first.');
+    pushUndo();
     setRows((prev) => prev.filter((_, i) => i < range.r1 || i > range.r2));
     setRowStatus({});
     hotRef.current?.hotInstance?.deselectCell();
@@ -379,6 +534,7 @@ function App() {
   function clearSelectedCells() {
     const range = selectedRange();
     if (!range) return alert('Please select cell(s) first.');
+    pushUndo();
     setRows((prev) => prev.map((row, ri) => {
       if (ri < range.r1 || ri > range.r2) return row;
       const next = { ...row };
@@ -393,6 +549,7 @@ function App() {
   function clearSelectedColumn() {
     const range = selectedRange();
     if (!range) return alert('Please select a column/cell first.');
+    pushUndo();
     setRows((prev) => prev.map((row) => {
       const next = { ...row };
       for (let ci = range.c1; ci <= range.c2; ci++) {
@@ -407,6 +564,7 @@ function App() {
     const range = selectedRange();
     if (!range) return alert('Please select column(s) or cell(s) first.');
     if (workingColumns.length <= (range.c2 - range.c1 + 1)) return alert('At least one column must remain.');
+    pushUndo();
     const removeIds = new Set(workingColumns.slice(range.c1, range.c2 + 1).map((c) => c.id));
     const removedLookup = workingColumns.slice(range.c1, range.c2 + 1).some((c) => c.sourceColumn === lookupColumn);
     const nextColumns = workingColumns.filter((c) => !removeIds.has(c.id));
@@ -431,6 +589,7 @@ function App() {
     const from = range.c1;
     const to = from + direction;
     if (to < 0 || to >= workingColumns.length) return;
+    pushUndo();
     setWorkingColumns((prev) => {
       const next = [...prev];
       [next[from], next[to]] = [next[to], next[from]];
@@ -441,6 +600,7 @@ function App() {
 
   function syncColumnMove(movedColumns, finalIndex) {
     if (!movedColumns?.length) return;
+    pushUndo();
     setWorkingColumns((prev) => {
       const moving = movedColumns.map((i) => prev[i]);
       let remaining = prev.filter((_, i) => !movedColumns.includes(i));
@@ -448,18 +608,6 @@ function App() {
       remaining.splice(insertAt, 0, ...moving);
       return remaining;
     });
-  }
-
-  function undoGrid() {
-    const hot = hotRef.current?.hotInstance;
-    hot?.undo();
-    setTimeout(syncRowsFromHot, 0);
-  }
-
-  function redoGrid() {
-    const hot = hotRef.current?.hotInstance;
-    hot?.redo();
-    setTimeout(syncRowsFromHot, 0);
   }
 
   function refreshSelectedRow() {
@@ -478,6 +626,7 @@ function App() {
   function addLiveCustomColumn() {
     const col = createCustomColumn('New Column');
     if (!col) return;
+    pushUndo();
     setWorkingColumns((prev) => [...prev, col]);
     setCustomColumns((prev) => [...prev, col]);
     setRows((prev) => prev.map((r) => ({ ...r, [col.id]: '' })));
@@ -490,6 +639,7 @@ function App() {
     if (workingColumns.some((c) => c.sourceColumn === sourceColumnName)) return alert('This master column already exists in the live sheet.');
     const existingIds = new Set(workingColumns.map((c) => c.id));
     const col = { id: makeColumnId(masterCol.displayName, existingIds), displayName: masterCol.displayName, sourceColumn: masterCol.originalName, isCustom: false };
+    pushUndo();
     setWorkingColumns((prev) => [...prev, col]);
     setSelected((prev) => [...prev, col]);
     setRows((prev) => prev.map((r) => {
@@ -497,7 +647,7 @@ function App() {
       const currentLookupValue = lookupWorkingCol ? r[lookupWorkingCol.id] : '';
       const exactMatches = lookupIndex.get(lookupKey(currentLookupValue)) || [];
       const match = duplicateMode === 'latest' ? exactMatches[exactMatches.length - 1] : exactMatches[0];
-      if (match) next[col.id] = match[sourceColumnName] ?? '';
+      if (match) next[col.id] = cleanExcelDisplayValue(match[sourceColumnName] ?? '');
       return next;
     }));
     setNotice(`Added master column: ${masterCol.displayName}. Existing rows were filled from main Excel where exact lookup matches were found.`);
@@ -512,10 +662,108 @@ function App() {
     setNotice('Lookup column changed. Matching is case-insensitive. Existing rows can be updated using Refresh All Rows.');
   }
 
+  function applyExcelFilter() {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    const plugin = hot.getPlugin('filters');
+    if (!plugin) return alert('Filter plugin is not available.');
+    plugin.clearConditions();
+    if (filterColumnId && filterText.trim()) {
+      const columnIndex = workingColumns.findIndex((c) => c.id === filterColumnId);
+      if (columnIndex >= 0) {
+        plugin.addCondition(columnIndex, 'contains', [filterText.trim()]);
+      }
+    }
+    plugin.filter();
+  }
+
+  function clearExcelFilter() {
+    const hot = hotRef.current?.hotInstance;
+    const plugin = hot?.getPlugin('filters');
+    plugin?.clearConditions();
+    plugin?.filter();
+    setFilterText('');
+    setFilterColumnId('');
+  }
+
+  function buildLiveExportPayload() {
+    const hot = hotRef.current?.hotInstance;
+
+    if (!hot) {
+      return {
+        filename,
+        columns: workingColumns,
+        rows: rows.map(cleanRecord),
+        cellStyles,
+        columnWidths: [],
+        rowHeights: [],
+      };
+    }
+
+    // Commit the cell currently being edited before exporting.
+    const editor = hot.getActiveEditor?.();
+    if (editor?.isOpened?.()) editor.finishEditing(false);
+
+    const visualColumnCount = hot.countCols();
+    const visualRowCount = hot.countRows();
+
+    // Export EXACT visible/live column order, including manual column moves.
+    const exportColumns = [];
+    const visualProps = [];
+    for (let visualCol = 0; visualCol < visualColumnCount; visualCol++) {
+      const prop = hot.colToProp(visualCol);
+      const configCol = workingColumns.find((c) => c.id === prop) || {
+        id: String(prop),
+        displayName: String(prop),
+        sourceColumn: null,
+        isCustom: true,
+      };
+      exportColumns.push(configCol);
+      visualProps.push(prop);
+    }
+
+    // Export EXACT visible/live row order. This respects sorting/filtering/hidden rows.
+    const exportRows = [];
+    const exportCellStyles = {};
+    const rowHeights = [];
+
+    for (let visualRow = 0; visualRow < visualRowCount; visualRow++) {
+      const physicalRow = typeof hot.toPhysicalRow === 'function' ? hot.toPhysicalRow(visualRow) : visualRow;
+      if (physicalRow === null || physicalRow === undefined || physicalRow < 0) continue;
+
+      const rowObj = {};
+      visualProps.forEach((prop, visualCol) => {
+        rowObj[prop] = cleanExcelDisplayValue(hot.getDataAtCell(visualRow, visualCol));
+
+        // Re-key formatting from source row to exported row so Excel matches visible sheet.
+        const originalStyle = cellStyles[`${physicalRow}:${prop}`] || cellStyles[`${visualRow}:${prop}`];
+        if (originalStyle) {
+          exportCellStyles[`${exportRows.length}:${prop}`] = originalStyle;
+        }
+      });
+
+      exportRows.push(rowObj);
+      rowHeights.push(hot.getRowHeight(visualRow) || 28);
+    }
+
+    const columnWidths = exportColumns.map((_, visualCol) => hot.getColWidth(visualCol) || 120);
+
+    return {
+      filename,
+      columns: exportColumns,
+      rows: exportRows,
+      cellStyles: exportCellStyles,
+      columnWidths,
+      rowHeights,
+    };
+  }
+
   async function exportFile(kind) {
-    const payload = { filename, columns: workingColumns, rows };
-    try { await downloadExport(kind, payload); }
-    catch (e) { setError(e.message); }
+    try {
+      await downloadExport(kind, buildLiveExportPayload());
+    } catch (e) {
+      setError(e.message);
+    }
   }
 
   async function importGenerated(file) {
@@ -543,6 +791,25 @@ function App() {
 
   useEffect(() => {
     if (step !== 3) return;
+    const onKeyDown = (event) => {
+      const active = document.activeElement;
+      const gridIsActive = document.querySelector('.hot-wrap') && (active?.closest?.('.handsontable') || hotRef.current?.hotInstance?.getSelectedLast());
+      if (!gridIsActive) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+        event.preventDefault();
+        undoGrid();
+      }
+      if ((event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === 'y' || (event.shiftKey && event.key.toLowerCase() === 'z'))) {
+        event.preventDefault();
+        redoGrid();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [step, rows, workingColumns, cellMeta, rowStatus, cellStyles]);
+
+  useEffect(() => {
+    if (step !== 3) return;
     const onPaste = (event) => {
       const active = document.activeElement;
       const grid = document.querySelector('.hot-wrap');
@@ -560,6 +827,26 @@ function App() {
     document.addEventListener('paste', onPaste, true);
     return () => document.removeEventListener('paste', onPaste, true);
   }, [step, rows, workingColumns, lookupColumn, lookupIndex]);
+
+  function excelCellRenderer(instance, TD, row, col, prop, value, cellProperties) {
+    // Use text renderer so Excel text is displayed as text, not HTML.
+    // Most important: never alter letters like capital T.
+    Handsontable.renderers.TextRenderer(instance, TD, row, col, prop, cleanExcelDisplayValue(value), cellProperties);
+
+    const style = cellStyles[`${row}:${prop}`] || {};
+    TD.style.fontWeight = style.fontWeight || '';
+    TD.style.fontStyle = style.fontStyle || '';
+    TD.style.color = style.color || '';
+    TD.style.backgroundColor = style.backgroundColor || '';
+    TD.style.textAlign = style.textAlign || 'left';
+    TD.style.verticalAlign = style.verticalAlign || 'middle';
+    TD.style.fontFamily = style.fontFamily || '';
+    TD.style.fontSize = style.fontSize || '';
+    TD.style.whiteSpace = style.whiteSpace || 'pre-wrap';
+    TD.style.overflow = 'visible';
+    TD.style.textOverflow = 'clip';
+    TD.style.lineHeight = '1.35';
+  }
 
   const contextMenu = useMemo(() => ({
     items: {
@@ -585,7 +872,7 @@ function App() {
   return <div className="app">
     <header className="topbar">
       <div><h1>Dynamic Excel Builder</h1><p>Upload master data, build custom sheets, live auto-fill, export Excel/PDF.</p></div>
-      <div className="top-actions"><span className="saved">{savedAt ? `Auto-saved ${savedAt}` : 'Local IndexedDB session'}</span><button onClick={resetAll} className="ghost">Start Over</button></div>
+      <div className="top-actions"><span className="saved">{savedAt ? `Auto-saved ${savedAt}` : 'Local IndexedDB session'}</span><button onClick={()=>setShowManual(true)} className="ghost">User Manual</button><button onClick={resetAll} className="ghost">Start Over</button></div>
     </header>
 
     <nav className="steps"><span className={step===1?'active':''}>1 Upload</span><span className={step===2?'active':''}>2 Configure</span><span className={step===3?'active':''}>3 Work & Export</span></nav>
@@ -593,7 +880,20 @@ function App() {
     {notice && <div className="alert ok">{notice}</div>}
     {busy && <div className="alert busy">Processing...</div>}
 
-    {step === 1 && <section className="card upload-card">
+    {showManual && <section className="manual-page card">
+      <div className="manual-header"><div><h2>Beginner Manual - How to Use This Website</h2><p>Follow these simple steps to create Excel-like working sheets without formulas.</p></div><button onClick={()=>setShowManual(false)} className="primary">Back to App</button></div>
+      <div className="manual-grid">
+        <div><h3>1. Upload Master Excel</h3><p>Upload your main `.xlsx` or `.xls` file. If headers are not in row 1, enter the correct header row number before upload.</p></div>
+        <div><h3>2. Select Columns</h3><p>Choose only the columns you need. You can rename, reorder, remove, and add custom columns.</p></div>
+        <div><h3>3. Choose Lookup Column</h3><p>Select a master column like Employee ID, Roll Number, Product Code, or Invoice Number. Matching is case-insensitive.</p></div>
+        <div><h3>4. Work Like Excel</h3><p>Use copy/paste, row/column actions, filters, formatting, undo/redo, and keyboard navigation in the live sheet.</p></div>
+        <div><h3>5. Auto-Fill</h3><p>Type a lookup value. If exact match exists, the row fills immediately. If partial matches exist, you can choose the correct master record.</p></div>
+        <div><h3>6. Export</h3><p>Enter a filename and export to Excel or PDF. Column order and your edited data are preserved.</p></div>
+      </div>
+      <div className="manual-tips"><b>Tips:</b> Use Ctrl+V to paste from Excel. Use header dropdowns for Excel-style filters. Use Ctrl+Z/Ctrl+Y or toolbar buttons for last 5 undo/redo actions.</div>
+    </section>}
+
+    {!showManual && step === 1 && <section className="card upload-card">
       <FileSpreadsheet size={42}/><h2>Upload Master Excel File</h2>
       <p>Supported: .xlsx and .xls. Empty rows are ignored and duplicate headers are renamed automatically.</p>
       <label>Header row number <input type="number" min="1" value={headerRow + 1} onChange={(e)=>setHeaderRow(Math.max(0, Number(e.target.value)-1))}/></label>
@@ -601,7 +901,7 @@ function App() {
       <div className="mini">If headers are on row 3, enter 3 before uploading.</div>
     </section>}
 
-    {step === 2 && master && <section className="grid-layout">
+    {!showManual && step === 2 && master && <section className="grid-layout">
       <div className="card"><h2>Master Columns</h2><p>{master.rowCount} rows · {master.columnCount} columns</p>
         <button onClick={() => document.getElementById('masterFileInput2')?.click()} className="ghost"><Upload size={15}/> Re-upload/Re-parse</button>
         <input id="masterFileInput2" hidden type="file" accept=".xlsx,.xls" onChange={(e)=>handleUpload(e.target.files?.[0])}/>
@@ -619,16 +919,32 @@ function App() {
       </div>
     </section>}
 
-    {step === 3 && <section className="workbench">
+    {!showManual && step === 3 && <section className="workbench">
       <div className="toolbar card">
         <button onClick={goBackToConfigure} className="ghost">Back to Configuration</button>
         <label className="inline-label">Lookup<select value={lookupColumn} onChange={(e)=>changeLookupInWork(e.target.value)}>{master?.columns?.map((c)=><option key={c.originalName} value={c.originalName}>{c.displayName}</option>)}</select></label>
+        <span className="ribbon-divider" />
+        <button onClick={undoGrid} disabled={!undoStack.length}>↶ Undo</button>
+        <button onClick={redoGrid} disabled={!redoStack.length}>↷ Redo</button>
+        <button onClick={() => toggleCellStyle('fontWeight', '700')}>B</button>
+        <button onClick={() => toggleCellStyle('fontStyle', 'italic')}>I</button>
+        <select onChange={(e)=>applyCellStyle({fontFamily:e.target.value})} defaultValue=""><option value="">Font</option><option value="Calibri">Calibri</option><option value="Arial">Arial</option><option value="Aptos">Aptos</option><option value="Times New Roman">Times New Roman</option><option value="Georgia">Georgia</option><option value="Verdana">Verdana</option><option value="Tahoma">Tahoma</option><option value="Trebuchet MS">Trebuchet</option><option value="Courier New">Courier New</option><option value="Nirmala UI">Nirmala UI</option></select>
+        <select onChange={(e)=>applyCellStyle({fontSize:e.target.value})} defaultValue=""><option value="">Size</option><option value="10px">10</option><option value="11px">11</option><option value="12px">12</option><option value="13px">13</option><option value="14px">14</option><option value="16px">16</option><option value="18px">18</option><option value="20px">20</option><option value="22px">22</option><option value="24px">24</option><option value="28px">28</option><option value="32px">32</option></select>
+        <label className="color-tool">Text <input type="color" onInput={(e)=>applyCellStyle({color:e.target.value})} onChange={(e)=>applyCellStyle({color:e.target.value})}/></label>
+        <label className="color-tool">Fill <input type="color" onInput={(e)=>applyCellStyle({backgroundColor:e.target.value})} onChange={(e)=>applyCellStyle({backgroundColor:e.target.value})}/></label>
+        <button onClick={() => applyCellStyle({textAlign:'left'})}>Left</button>
+        <button onClick={() => applyCellStyle({textAlign:'center'})}>Center</button>
+        <button onClick={() => applyCellStyle({textAlign:'right'})}>Right</button>
+        <button onClick={() => applyCellStyle({verticalAlign:'top'})}>Top</button>
+        <button onClick={() => applyCellStyle({verticalAlign:'middle'})}>Middle</button>
+        <button onClick={() => applyCellStyle({verticalAlign:'bottom'})}>Bottom</button>
+        <button onClick={() => toggleCellStyle('whiteSpace', 'normal')}>Wrap</button>
+        <button onClick={clearSelectedFormatting}>Clear Format</button>
+        <span className="ribbon-divider" />
         <button onClick={()=>addRows(10)}><Plus size={16}/> Add 10 Rows</button>
         <button onClick={addLiveCustomColumn}><Plus size={16}/> Add Column</button>
         <select onChange={(e)=>{ addLiveMasterColumn(e.target.value); e.target.value=''; }} defaultValue=""><option value="">Add removed master column...</option>{master?.columns?.filter((m)=>!workingColumns.some((c)=>c.sourceColumn===m.originalName)).map((m)=><option key={m.originalName} value={m.originalName}>{m.displayName}</option>)}</select>
         <button onClick={pasteFromClipboardButton}>Paste Clipboard</button>
-        <button onClick={undoGrid}>Undo</button>
-        <button onClick={redoGrid}>Redo</button>
         <button onClick={deleteSelectedRows}><Trash2 size={16}/> Delete Rows</button>
         <button onClick={deleteSelectedColumns}><Trash2 size={16}/> Delete Columns</button>
         <button onClick={() => moveSelectedColumn(-1)}>← Move Column</button>
@@ -637,13 +953,19 @@ function App() {
         <button onClick={clearSelectedColumn}>Clear Column</button>
         <button onClick={refreshSelectedRow}><RefreshCw size={16}/> Refresh Row(s)</button>
         <button onClick={refreshAllRows}><RefreshCw size={16}/> Refresh All Rows</button>
+        <span className="ribbon-divider" />
+        <select value={filterColumnId} onChange={(e)=>setFilterColumnId(e.target.value)}><option value="">Filter column...</option>{workingColumns.map((c)=><option key={c.id} value={c.id}>{c.displayName}</option>)}</select>
+        <input value={filterText} onChange={(e)=>setFilterText(e.target.value)} onKeyDown={(e)=>{ if(e.key==='Enter') applyExcelFilter(); }} placeholder="Filter contains..."/>
+        <button onClick={applyExcelFilter}>Apply Filter</button>
+        <button onClick={clearExcelFilter}>Clear Filter</button>
+        <span className="ribbon-divider" />
         <input value={filename} onChange={(e)=>setFilename(e.target.value)} placeholder="Export filename"/>
         <button onClick={()=>exportFile('excel')}><Download size={16}/> Excel</button>
         <button onClick={()=>exportFile('pdf')}><Download size={16}/> PDF</button>
         <label className="import-button"><Upload size={16}/> Import Sheet<input type="file" hidden accept=".xlsx,.xls" onChange={(e)=>importGenerated(e.target.files?.[0])}/></label>
       </div>
       <div className="statusbar">Lookup: <b>{lookupColumn}</b> · Case-insensitive matching enabled · Rows: {rows.length} · Matched: {Object.values(rowStatus).filter(s=>s==='matched').length} · Not found: {Object.values(rowStatus).filter(s=>s==='not_found').length}</div>
-      <div className="hot-wrap"><HotTable ref={hotRef} data={rows} columns={gridColumns} colHeaders={gridHeaders} rowHeaders={true} width="100%" height="68vh" licenseKey="non-commercial-and-evaluation" stretchH="all" manualColumnResize={true} manualColumnMove={true} manualRowMove={true} dropdownMenu={true} filters={true} contextMenu={contextMenu} afterColumnMove={(movedColumns, finalIndex) => syncColumnMove(movedColumns, finalIndex)} multiColumnSorting={true} copyPaste={{ rowsLimit: 100000, columnsLimit: 1000, pasteMode: 'overwrite' }} undo={true} outsideClickDeselects={false} afterChange={afterChange} afterCreateRow={() => setTimeout(syncRowsFromHot, 0)} afterRemoveRow={() => setTimeout(syncRowsFromHot, 0)} afterUndo={() => setTimeout(syncRowsFromHot, 0)} afterRedo={() => setTimeout(syncRowsFromHot, 0)} cells={(row)=>({ className: rowStatus[row] === 'not_found' ? 'not-found-row' : rowStatus[row] === 'matched' ? 'matched-row' : '' })}/></div>
+      <div className="hot-wrap"><HotTable ref={hotRef} data={rows} columns={gridColumns} colHeaders={gridHeaders} rowHeaders={true} width="100%" height="68vh" licenseKey="non-commercial-and-evaluation" stretchH="all" autoRowSize={true} autoColumnSize={true} wordWrap={true} columnHeaderHeight={34} rowHeights={28} manualColumnResize={true} manualColumnMove={true} manualRowMove={true} dropdownMenu={true} filters={true} contextMenu={contextMenu} afterColumnMove={(movedColumns, finalIndex) => syncColumnMove(movedColumns, finalIndex)} multiColumnSorting={true} copyPaste={{ rowsLimit: 100000, columnsLimit: 1000, pasteMode: 'overwrite' }} undo={true} outsideClickDeselects={false} afterChange={afterChange} afterCreateRow={() => setTimeout(syncRowsFromHot, 0)} afterRemoveRow={() => setTimeout(syncRowsFromHot, 0)} afterUndo={() => setTimeout(syncRowsFromHot, 0)} afterRedo={() => setTimeout(syncRowsFromHot, 0)} cells={(row)=>({ renderer: excelCellRenderer, className: rowStatus[row] === 'not_found' ? 'not-found-row' : rowStatus[row] === 'matched' ? 'matched-row' : '' })}/></div>
       <p className="mini">Type a value into the lookup column. Matching is instant and case-insensitive. If only a partial match is found, the app asks before filling from main Excel. Custom columns are never overwritten.</p>
     </section>}
   </div>;
