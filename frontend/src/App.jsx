@@ -112,6 +112,7 @@ function App() {
   const [filterText, setFilterText] = useState('');
   const undoRef = useRef([]);
   const redoRef = useRef([]);
+  const internalClipboardRef = useRef(null);
 
   useEffect(() => {
     loadSession().then((session) => {
@@ -464,13 +465,58 @@ function App() {
     setTimeout(() => lookupRows.forEach(([r, value]) => applyAutofill(r, false, value)), 0);
   }
 
+  function copySelectedCellsToInternalClipboard() {
+    const hot = hotRef.current?.hotInstance;
+    const range = selectedRange();
+    if (!hot || !range) {
+      alert('Please select cell(s) to copy.');
+      return false;
+    }
+
+    const matrix = [];
+    for (let r = range.r1; r <= range.r2; r++) {
+      const line = [];
+      for (let c = range.c1; c <= range.c2; c++) {
+        line.push(cleanExcelDisplayValue(hot.getDataAtCell(r, c)) ?? '');
+      }
+      matrix.push(line);
+    }
+
+    const text = matrix.map((row) => row.map((cell) => String(cell ?? '').replace(/\r?\n/g, '\n')).join('\t')).join('\n');
+    internalClipboardRef.current = { matrix, text, preferNextPaste: true };
+
+    // Also copy to Windows/browser clipboard when permission is available.
+    navigator.clipboard?.writeText(text).catch(() => {});
+    setNotice(`Copied ${matrix.length} row(s) × ${matrix[0]?.length || 0} column(s) from live sheet.`);
+    return true;
+  }
+
+  function pasteInternalClipboardAtSelection() {
+    const clip = internalClipboardRef.current;
+    if (!clip?.matrix?.length) return false;
+    const range = selectedRange() || { r1: 0, c1: 0 };
+    pasteMatrix(clip.matrix, range.r1, range.c1);
+    internalClipboardRef.current = { ...clip, preferNextPaste: false };
+    return true;
+  }
+
   async function pasteFromClipboardButton() {
     try {
       const text = await navigator.clipboard.readText();
       const range = selectedRange() || { r1: 0, c1: 0 };
-      pasteMatrix(parseClipboardText(text), range.r1, range.c1);
+      if (internalClipboardRef.current?.preferNextPaste && pasteInternalClipboardAtSelection()) {
+        return;
+      }
+      if (text) {
+        pasteMatrix(parseClipboardText(text), range.r1, range.c1);
+        return;
+      }
     } catch (_) {
-      alert('Clipboard permission blocked. Click a cell in the live sheet and press Ctrl+V / Cmd+V.');
+      // Browser/WebView may block clipboard read. Fallback to internal live-sheet clipboard.
+    }
+
+    if (!pasteInternalClipboardAtSelection()) {
+      alert('Clipboard permission blocked or empty. Copy cells first, then paste.');
     }
   }
 
@@ -795,6 +841,14 @@ function App() {
       const active = document.activeElement;
       const gridIsActive = document.querySelector('.hot-wrap') && (active?.closest?.('.handsontable') || hotRef.current?.hotInstance?.getSelectedLast());
       if (!gridIsActive) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
+        event.preventDefault();
+        copySelectedCellsToInternalClipboard();
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'x') {
+        event.preventDefault();
+        if (copySelectedCellsToInternalClipboard()) clearSelectedCells();
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
         event.preventDefault();
         undoGrid();
@@ -817,12 +871,17 @@ function App() {
       const gridIsActive = grid && (grid.contains(active) || active?.closest?.('.handsontable') || hotRef.current?.hotInstance?.getSelectedLast());
       if (!gridIsActive || (isFormField && !active?.closest?.('.handsontable'))) return;
       const text = event.clipboardData?.getData('text/plain');
-      if (!text) return;
-      const matrix = parseClipboardText(text);
-      if (!matrix.length) return;
       const range = selectedRange() || { r1: 0, c1: 0 };
       event.preventDefault();
-      pasteMatrix(matrix, range.r1, range.c1);
+      if (internalClipboardRef.current?.preferNextPaste && pasteInternalClipboardAtSelection()) {
+        return;
+      }
+      if (text) {
+        const matrix = parseClipboardText(text);
+        if (matrix.length) pasteMatrix(matrix, range.r1, range.c1);
+        return;
+      }
+      pasteInternalClipboardAtSelection();
     };
     document.addEventListener('paste', onPaste, true);
     return () => document.removeEventListener('paste', onPaste, true);
@@ -861,9 +920,9 @@ function App() {
       move_right: { name: 'Move column right', callback: () => moveSelectedColumn(1) },
       add_custom_column: { name: 'Insert custom column', callback: addLiveCustomColumn },
       hsep2: '---------',
-      copy: {},
-      cut: {},
-      paste_clipboard: { name: 'Paste from clipboard', callback: pasteFromClipboardButton },
+      copy_live: { name: 'Copy selected live cells', callback: copySelectedCellsToInternalClipboard },
+      cut_live: { name: 'Cut selected live cells', callback: () => { if (copySelectedCellsToInternalClipboard()) clearSelectedCells(); } },
+      paste_clipboard: { name: 'Paste into selected cell(s)', callback: pasteFromClipboardButton },
       undo: { name: 'Undo', callback: undoGrid },
       redo: { name: 'Redo', callback: redoGrid },
     }
@@ -944,7 +1003,8 @@ function App() {
         <button onClick={()=>addRows(10)}><Plus size={16}/> Add 10 Rows</button>
         <button onClick={addLiveCustomColumn}><Plus size={16}/> Add Column</button>
         <select onChange={(e)=>{ addLiveMasterColumn(e.target.value); e.target.value=''; }} defaultValue=""><option value="">Add removed master column...</option>{master?.columns?.filter((m)=>!workingColumns.some((c)=>c.sourceColumn===m.originalName)).map((m)=><option key={m.originalName} value={m.originalName}>{m.displayName}</option>)}</select>
-        <button onClick={pasteFromClipboardButton}>Paste Clipboard</button>
+        <button onClick={copySelectedCellsToInternalClipboard}>Copy</button>
+        <button onClick={pasteFromClipboardButton}>Paste</button>
         <button onClick={deleteSelectedRows}><Trash2 size={16}/> Delete Rows</button>
         <button onClick={deleteSelectedColumns}><Trash2 size={16}/> Delete Columns</button>
         <button onClick={() => moveSelectedColumn(-1)}>← Move Column</button>
@@ -965,7 +1025,7 @@ function App() {
         <label className="import-button"><Upload size={16}/> Import Sheet<input type="file" hidden accept=".xlsx,.xls" onChange={(e)=>importGenerated(e.target.files?.[0])}/></label>
       </div>
       <div className="statusbar">Lookup: <b>{lookupColumn}</b> · Case-insensitive matching enabled · Rows: {rows.length} · Matched: {Object.values(rowStatus).filter(s=>s==='matched').length} · Not found: {Object.values(rowStatus).filter(s=>s==='not_found').length}</div>
-      <div className="hot-wrap"><HotTable ref={hotRef} data={rows} columns={gridColumns} colHeaders={gridHeaders} rowHeaders={true} width="100%" height="68vh" licenseKey="non-commercial-and-evaluation" stretchH="all" autoRowSize={true} autoColumnSize={true} wordWrap={true} columnHeaderHeight={34} rowHeights={28} manualColumnResize={true} manualColumnMove={true} manualRowMove={true} dropdownMenu={true} filters={true} contextMenu={contextMenu} afterColumnMove={(movedColumns, finalIndex) => syncColumnMove(movedColumns, finalIndex)} multiColumnSorting={true} copyPaste={{ rowsLimit: 100000, columnsLimit: 1000, pasteMode: 'overwrite' }} undo={true} outsideClickDeselects={false} afterChange={afterChange} afterCreateRow={() => setTimeout(syncRowsFromHot, 0)} afterRemoveRow={() => setTimeout(syncRowsFromHot, 0)} afterUndo={() => setTimeout(syncRowsFromHot, 0)} afterRedo={() => setTimeout(syncRowsFromHot, 0)} cells={(row)=>({ renderer: excelCellRenderer, className: rowStatus[row] === 'not_found' ? 'not-found-row' : rowStatus[row] === 'matched' ? 'matched-row' : '' })}/></div>
+      <div className="hot-wrap"><HotTable ref={hotRef} data={rows} columns={gridColumns} colHeaders={gridHeaders} rowHeaders={true} width="100%" height="68vh" licenseKey="non-commercial-and-evaluation" stretchH="all" autoRowSize={true} autoColumnSize={true} wordWrap={true} columnHeaderHeight={34} rowHeights={28} manualColumnResize={true} manualColumnMove={true} manualRowMove={true} dropdownMenu={false} filters={true} contextMenu={contextMenu} afterColumnMove={(movedColumns, finalIndex) => syncColumnMove(movedColumns, finalIndex)} multiColumnSorting={true} copyPaste={{ rowsLimit: 100000, columnsLimit: 1000, pasteMode: 'overwrite' }} undo={true} outsideClickDeselects={false} afterChange={afterChange} afterCreateRow={() => setTimeout(syncRowsFromHot, 0)} afterRemoveRow={() => setTimeout(syncRowsFromHot, 0)} afterUndo={() => setTimeout(syncRowsFromHot, 0)} afterRedo={() => setTimeout(syncRowsFromHot, 0)} cells={(row)=>({ renderer: excelCellRenderer, className: rowStatus[row] === 'not_found' ? 'not-found-row' : rowStatus[row] === 'matched' ? 'matched-row' : '' })}/></div>
       <p className="mini">Type a value into the lookup column. Matching is instant and case-insensitive. If only a partial match is found, the app asks before filling from main Excel. Custom columns are never overwritten.</p>
     </section>}
   </div>;

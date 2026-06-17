@@ -5,6 +5,8 @@ import math
 import os
 import re
 import tempfile
+import zipfile
+import xml.etree.ElementTree as ET
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -349,6 +351,74 @@ def pixels_to_points(px: Any) -> Optional[float]:
         return None
 
 
+MONTH_MAP = {
+    "jan": 1, "january": 1,
+    "feb": 2, "february": 2,
+    "mar": 3, "march": 3,
+    "apr": 4, "april": 4,
+    "may": 5,
+    "jun": 6, "june": 6,
+    "jul": 7, "july": 7,
+    "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10,
+    "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+
+
+def normalize_two_digit_year(year_text: str) -> int:
+    year = int(year_text)
+    if len(year_text) == 2:
+        return 2000 + year if year <= 49 else 1900 + year
+    return year
+
+
+def parse_date_string_for_excel(value: Any) -> Optional[tuple[datetime, str]]:
+    """Convert text-looking dates into real Excel dates to avoid Excel warnings.
+
+    Example warning fixed: "Text Date with 2-Digit Year" for values like 1-Apr-26.
+    We export these as real date cells with a 4-digit year format.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+
+    # 1-Apr-26 / 01-Apr-2026 / 1-April-26
+    m = re.match(r"^(\d{1,2})[-\s]([A-Za-z]{3,9})[-\s](\d{2}|\d{4})$", text)
+    if m:
+        day = int(m.group(1))
+        month = MONTH_MAP.get(m.group(2).lower())
+        year_text = m.group(3)
+        year = normalize_two_digit_year(year_text)
+        if month:
+            # Store as a real Excel date but keep the same visible style.
+            return datetime(year, month, day), ("d-mmm-yy" if len(year_text) == 2 else "d-mmm-yyyy")
+
+    # dd/mm/yyyy, dd-mm-yyyy, dd.mm.yyyy. Indian/user expected format = day first.
+    m = re.match(r"^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2}|\d{4})$", text)
+    if m:
+        day = int(m.group(1))
+        month = int(m.group(2))
+        year_text = m.group(3)
+        year = normalize_two_digit_year(year_text)
+        if 1 <= day <= 31 and 1 <= month <= 12:
+            return datetime(year, month, day), ("dd/mm/yy" if len(year_text) == 2 else "dd/mm/yyyy")
+
+    # yyyy-mm-dd / yyyy/mm/dd
+    m = re.match(r"^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$", text)
+    if m:
+        year = int(m.group(1))
+        month = int(m.group(2))
+        day = int(m.group(3))
+        if 1 <= day <= 31 and 1 <= month <= 12:
+            return datetime(year, month, day), "yyyy-mm-dd"
+
+    return None
+
+
 def apply_excel_cell_style(cell: Any, style: Dict[str, Any]) -> None:
     color = css_hex_to_argb(style.get("color")) if style else None
     fill = css_hex_to_argb(style.get("backgroundColor")) if style else None
@@ -372,60 +442,201 @@ def apply_excel_cell_style(cell: Any, style: Dict[str, Any]) -> None:
     cell.border = THIN_EXCEL_BORDER
 
 
+def remove_excel_filter_and_table_xml(xlsx_bytes: bytes) -> bytes:
+    """Hard-remove Excel table/filter XML from generated XLSX.
+
+    This is intentionally strict because Excel can display green table headers and
+    dropdown filter arrows if any <tableParts>, <autoFilter>, table relationships,
+    or table content types remain in the XLSX package. The user wants a plain
+    worksheet header only.
+    """
+    spreadsheet_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    rel_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    content_ns = "http://schemas.openxmlformats.org/package/2006/content-types"
+    ET.register_namespace("", spreadsheet_ns)
+    ET.register_namespace("r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships")
+
+    def remove_nodes(root: ET.Element, local_name: str) -> None:
+        for parent in list(root.iter()):
+            for child in list(parent):
+                if child.tag.endswith("}" + local_name) or child.tag == local_name:
+                    parent.remove(child)
+
+    input_io = io.BytesIO(xlsx_bytes)
+    output_io = io.BytesIO()
+
+    with zipfile.ZipFile(input_io, "r") as zin, zipfile.ZipFile(output_io, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            name = item.filename
+
+            # Remove all Excel table definition files completely.
+            if name.startswith("xl/tables/"):
+                continue
+
+            data = zin.read(name)
+
+            # Remove autoFilter/tableParts from worksheets.
+            if name.startswith("xl/worksheets/") and name.endswith(".xml"):
+                try:
+                    root = ET.fromstring(data)
+                    remove_nodes(root, "autoFilter")
+                    remove_nodes(root, "tableParts")
+                    data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+                except Exception:
+                    pass
+
+            # Remove relationships pointing to table XML.
+            elif name.startswith("xl/worksheets/_rels/") and name.endswith(".rels"):
+                try:
+                    root = ET.fromstring(data)
+                    for rel in list(root):
+                        target = rel.attrib.get("Target", "")
+                        rel_type = rel.attrib.get("Type", "")
+                        if "table" in target.lower() or rel_type.endswith("/table"):
+                            root.remove(rel)
+                    data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+                except Exception:
+                    pass
+
+            # Remove table content type declarations.
+            elif name == "[Content_Types].xml":
+                try:
+                    root = ET.fromstring(data)
+                    for child in list(root):
+                        part_name = child.attrib.get("PartName", "")
+                        content_type = child.attrib.get("ContentType", "")
+                        if part_name.startswith("/xl/tables/") or content_type.endswith("spreadsheetml.table+xml"):
+                            root.remove(child)
+                    data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+                except Exception:
+                    pass
+
+            # Remove filter database defined names if any exist.
+            elif name == "xl/workbook.xml":
+                try:
+                    root = ET.fromstring(data)
+                    for parent in list(root.iter()):
+                        for child in list(parent):
+                            text = "".join(child.itertext()) if list(child) or child.text else (child.text or "")
+                            if "_FilterDatabase" in child.attrib.get("name", "") or "_FilterDatabase" in text:
+                                parent.remove(child)
+                    data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+                except Exception:
+                    pass
+
+            zout.writestr(item, data)
+
+    return output_io.getvalue()
+
+
 @app.post("/api/export/excel")
 def export_excel(payload: ExportPayload) -> Response:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Working Sheet"
-    headers = [c.displayName for c in payload.columns]
-    ws.append(headers)
+    """Export a plain worksheet only.
 
-    for cell in ws[1]:
-        cell.font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
-        cell.fill = PatternFill("solid", fgColor="FF217346")
-        cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
-        cell.border = THIN_EXCEL_BORDER
-
-    for item in payload.rows:
-        ws.append([row_value(item, c.id) for c in payload.columns])
-
-    # Apply live-sheet user formatting to exported Excel.
-    for row_zero_index, item in enumerate(payload.rows):
-        excel_row = row_zero_index + 2
-        for col_idx, col in enumerate(payload.columns, start=1):
-            style = payload.cellStyles.get(f"{row_zero_index}:{col.id}", {})
-            apply_excel_cell_style(ws.cell(row=excel_row, column=col_idx), style)
-
-    for col_idx, col in enumerate(payload.columns, start=1):
-        letter = get_column_letter(col_idx)
-        live_width = payload.columnWidths[col_idx - 1] if col_idx - 1 < len(payload.columnWidths) else None
-        converted_width = pixels_to_excel_width(live_width)
-        if converted_width:
-            ws.column_dimensions[letter].width = converted_width
-        else:
-            max_len = len(col.displayName)
-            for row_idx in range(2, ws.max_row + 1):
-                value = ws.cell(row=row_idx, column=col_idx).value
-                max_len = max(max_len, len(str(value)) if value is not None else 0)
-            ws.column_dimensions[letter].width = min(max(max_len + 2, 10), 60)
-
-    ws.row_dimensions[1].height = 24
-    for row_zero_index in range(len(payload.rows)):
-        live_height = payload.rowHeights[row_zero_index] if row_zero_index < len(payload.rowHeights) else None
-        converted_height = pixels_to_points(live_height)
-        if converted_height:
-            ws.row_dimensions[row_zero_index + 2].height = converted_height
-
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
+    IMPORTANT FIX:
+    This endpoint intentionally uses XlsxWriter and never creates Excel Tables,
+    never enables AutoFilter, and never freezes panes. Therefore Excel cannot
+    display the green table header or filter dropdown icons shown in the user's
+    screenshot.
+    """
+    import xlsxwriter
 
     stream = io.BytesIO()
-    wb.save(stream)
+    workbook = xlsxwriter.Workbook(stream, {"in_memory": True, "strings_to_urls": False})
+    worksheet = workbook.add_worksheet("Working Sheet")
+
+    # Show normal Excel gridlines and keep worksheet plain.
+    worksheet.hide_gridlines(0)
+
+    format_cache: Dict[str, Any] = {}
+
+    def xlsx_color(hex_value: Any) -> Optional[str]:
+        if not hex_value:
+            return None
+        text = str(hex_value).strip()
+        return text if re.match(r"^#[0-9a-fA-F]{6}$", text) else None
+
+    def css_size_to_points(value: Any) -> int:
+        pts = css_font_size_to_points(value)
+        return int(round(pts)) if pts else 11
+
+    def make_format(style: Optional[Dict[str, Any]] = None, *, header: bool = False, date_format: Optional[str] = None):
+        style = style or {}
+        key = str(sorted(style.items())) + f"|header={header}|date={date_format or ''}"
+        if key in format_cache:
+            return format_cache[key]
+
+        props: Dict[str, Any] = {
+            "font_name": style.get("fontFamily") or "Calibri",
+            "font_size": css_size_to_points(style.get("fontSize")),
+            "text_wrap": True,
+            "valign": "vcenter" if (style.get("verticalAlign") or "middle") == "middle" else (style.get("verticalAlign") or "vcenter"),
+            "align": style.get("textAlign") or "left",
+        }
+
+        if header:
+            # Plain header only: bold black text, no fill, no filter, no table.
+            props.update({"bold": True, "font_color": "#000000", "bg_color": None, "pattern": 0})
+
+        if str(style.get("fontWeight", "")) in {"700", "bold"}:
+            props["bold"] = True
+        if str(style.get("fontStyle", "")) == "italic":
+            props["italic"] = True
+        if xlsx_color(style.get("color")):
+            props["font_color"] = xlsx_color(style.get("color"))
+        if xlsx_color(style.get("backgroundColor")):
+            props["bg_color"] = xlsx_color(style.get("backgroundColor"))
+        if date_format:
+            props["num_format"] = date_format
+
+        # No border on header; very light border on data only if styled by user is not required.
+        fmt = workbook.add_format({k: v for k, v in props.items() if v is not None})
+        format_cache[key] = fmt
+        return fmt
+
+    header_format = make_format(header=True)
+
+    # Write header as a normal row. No worksheet.autofilter(), no add_table().
+    for col_idx, col in enumerate(payload.columns):
+        worksheet.write(0, col_idx, col.displayName, header_format)
+
+    # Write body exactly from live sheet. Date-looking text is converted to real
+    # Excel date values to avoid green triangle/date text warnings.
+    for row_idx, row in enumerate(payload.rows, start=1):
+        for col_idx, col in enumerate(payload.columns):
+            value = row_value(row, col.id)
+            style = payload.cellStyles.get(f"{row_idx - 1}:{col.id}", {})
+            parsed_date = parse_date_string_for_excel(value)
+            if parsed_date:
+                date_value, date_fmt = parsed_date
+                worksheet.write_datetime(row_idx, col_idx, date_value, make_format(style, date_format=date_fmt))
+            else:
+                worksheet.write(row_idx, col_idx, value, make_format(style))
+
+    # Match live sheet widths/heights where possible.
+    for col_idx, col in enumerate(payload.columns):
+        live_width = payload.columnWidths[col_idx] if col_idx < len(payload.columnWidths) else None
+        converted_width = pixels_to_excel_width(live_width)
+        if not converted_width:
+            max_len = len(str(col.displayName))
+            for row in payload.rows:
+                max_len = max(max_len, len(str(row_value(row, col.id))))
+            converted_width = min(max(max_len + 2, 10), 60)
+        worksheet.set_column(col_idx, col_idx, converted_width)
+
+    worksheet.set_row(0, 22, header_format)
+    for row_idx in range(len(payload.rows)):
+        live_height = payload.rowHeights[row_idx] if row_idx < len(payload.rowHeights) else None
+        worksheet.set_row(row_idx + 1, pixels_to_points(live_height) or 21)
+
+    workbook.close()
+    clean_xlsx = remove_excel_filter_and_table_xml(stream.getvalue())
+
     name = safe_filename(payload.filename)
     if not name.lower().endswith(".xlsx"):
         name += ".xlsx"
     return Response(
-        stream.getvalue(),
+        clean_xlsx,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{name}"'},
     )
@@ -512,3 +723,10 @@ def export_pdf(payload: ExportPayload) -> Response:
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{name}"'},
     )
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.environ.get("PORT", "8765"))
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
